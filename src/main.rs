@@ -1,119 +1,15 @@
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use regex::Regex;
 use std::env;
-use std::fmt;
-use std::ffi::OsStr;
-use std::fs;
-use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
-use std::string::FromUtf8Error;
 
-pub struct Error(pub String);
+mod error;
+mod fs;
+mod vcs;
 
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Error {
-    pub fn new(msg: impl Into<String>) -> Self {
-        Error(msg.into())
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Error(err.to_string())
-    }
-}
-
-impl From<String> for Error {
-    fn from(err: String) -> Self {
-        Error(err)
-    }
-}
-
-impl From<FromUtf8Error> for Error {
-    fn from(err: FromUtf8Error) -> Self {
-        Error(err.to_string())
-    }
-}
-
-
-fn make_readonly(path: &Path) -> io::Result<()> {
-    if !path.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "The file does not exists"
-        ));
-    }
-
-    let metadata = fs::metadata(path)?;
-
-    if metadata.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Cannot set read-only to directory"
-        ));
-    }
-
-    let mut permissions = metadata.permissions();
-
-    #[cfg(unix)]
-    permissions.set_mode(0o444);
-
-    #[cfg(windows)]
-    permissions.set_readonly(true);
-
-    fs::set_permissions(path, permissions)?;
-    Ok(())
-}
-
-fn git<I, S>(args: I) -> Result<String, Error>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = Command::new("git")
-        .args(args)
-        .env("LC_ALL", "C.UTF-8")
-        .output()
-        .map_err(|e| format!("Failed to execute git: {}", e))?;
-
-    if output.status.success() {
-       String::from_utf8(output.stdout)
-           .map(|s| s.trim().to_string())
-           .map_err(|e| Error(format!("Invalid UTF-8: {}", e)))
-   } else {
-       String::from_utf8(output.stderr)
-           .map_err(|e| Error(format!("Invalid UTF-8 in stderr: {}", e)))
-   }
-}
-
-fn tf<I, S>(args: I) -> Result<String, Error>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = Command::new("tf")
-        .args(args)
-        .env("LANG", "C")
-        .env("TF_ADDITIONAL_JAVA_ARGS", "-Dfile.encoding=UTF-8 -Duser.language=en -Duser.country=US")
-        .output()
-        .map_err(|e| format!("Failed to execute tf: {}", e))?;
-
-    if output.status.success() {
-        String::from_utf8(output.stdout)
-            .map(|s| s.trim().to_string())
-            .map_err(|e| Error(format!("Invalid UTF-8: {}", e)))
-    } else {
-        String::from_utf8(output.stderr)
-            .map_err(|e| Error(format!("Invalid UTF-8 in stderr: {}", e)))
-    }
-}
+use crate::error::Error;
+use crate::fs::make_readonly;
+use crate::vcs::{ tf, git };
 
 struct Workfold {
     workspace: String,
@@ -126,14 +22,14 @@ fn get_workfold(toplevel: &str) -> Result<Workfold, Error> {
     let tf_workfold = tf(["workfold",  &toplevel])?;
     let mut workfold_lines = tf_workfold.lines();
 
-    let workspace_regex = Regex::new(r"\s*Workspace:\s*([\s\S]*)\s*").map_err(|e| e.to_string())?;
+    let workspace_regex = Regex::new(r"\s*Workspace:\s*([\s\S]*)\s*")?;
     let workspace = workfold_lines
         .find_map(|s| workspace_regex.captures(s))
         .and_then(|caps| caps.get(1))
         .map(|m| m.as_str().trim())
         .ok_or_else(|| "Missing workspace".to_string())?;
 
-    let collection_regex = Regex::new(r"\s*Collection:\s*([\s\S]*)\s*").map_err(|e| e.to_string())?;
+    let collection_regex = Regex::new(r"\s*Collection:\s*([\s\S]*)\s*")?;
     let collection = workfold_lines
         .find_map(|s| collection_regex.captures(s))
         .and_then(|caps| caps.get(1))
@@ -143,7 +39,7 @@ fn get_workfold(toplevel: &str) -> Result<Workfold, Error> {
     let mut path_map_expr = String::from(r"\s*(\$[^:]*)\s*:\s*(");
     path_map_expr.push_str(&regex::escape(&toplevel));
     path_map_expr.push_str(r")\s*");
-    let path_map_regex = Regex::new(&path_map_expr).map_err(|e| e.to_string())?;
+    let path_map_regex = Regex::new(&path_map_expr)?;
     let path_map: (&str, &str) = workfold_lines
         .find_map(|s| path_map_regex.captures(s))
         .and_then(|caps| {
@@ -162,7 +58,7 @@ fn get_workfold(toplevel: &str) -> Result<Workfold, Error> {
 
 fn to_date(src: &str) -> Result<String, Error> {
     let format = "%b %d, %Y, %I:%M:%S %p";
-    let naive_dt = NaiveDateTime::parse_from_str(src, format).map_err(|e| e.to_string())?;
+    let naive_dt = NaiveDateTime::parse_from_str(src, format)?;
     let dt: DateTime<Local> = Local.from_local_datetime(&naive_dt)
         .single()
         .ok_or_else(|| "Invalid local datetime".to_string())?;
@@ -276,7 +172,7 @@ fn fetch(version: &str) -> Result<String, Error> {
     let git_ls_files = git(["ls-files", "--full-name", &toplevel])?;
     for line in git_ls_files.lines() {
         let path = Path::new(&toplevel).join(&line);
-        make_readonly(&path).map_err(|e| e.to_string())?;
+        make_readonly(&path)?;
     }
 
     for commit in commits.iter().rev() {
@@ -333,7 +229,7 @@ fn push(msg: &str) -> Result<String, Error>
     let workfold = get_workfold(&toplevel)?;
     tf(["workfold", "undo", "-recursive", &workfold.local])?;
 
-    let last_regex = Regex::new(r".([a-z0-9]*).").map_err(|e| e.to_string())?;
+    let last_regex = Regex::new(r".([a-z0-9]*).")?;
     let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:\"%H\"", &workfold.local])?;
     let last: &str = git_last
         .lines()
@@ -342,7 +238,7 @@ fn push(msg: &str) -> Result<String, Error>
         .map(|m| m.as_str().trim())
         .ok_or_else(|| "Missing hash".to_string())?;
 
-    let commitbranch_regex = Regex::new(&format!("\\s*({})\\s*", branch)).map_err(|e| e.to_string())?;
+    let commitbranch_regex = Regex::new(&format!("\\s*({})\\s*", branch))?;
     let git_commitbranch = git(["branch", "--contains", &last])?;
     let commitbranch: &str = git_commitbranch
         .lines()
@@ -355,11 +251,11 @@ fn push(msg: &str) -> Result<String, Error>
         return Err(Error::new("В текущую ветку не слиты изменения ветки TFS"));
     }
 
-    let modify_regex = Regex::new(r"\s*M\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
-    let add_regex = Regex::new(r"\s*A\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
-    let del_regex = Regex::new(r"\s*D\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
-    let move_regex = Regex::new(r"\s*R\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
-    let copy_regex = Regex::new(r"\s*C\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
+    let modify_regex = Regex::new(r"\s*M\s*([\S\s]*)\s*")?;
+    let add_regex = Regex::new(r"\s*A\s*([\S\s]*)\s*")?;
+    let del_regex = Regex::new(r"\s*D\s*([\S\s]*)\s*")?;
+    let move_regex = Regex::new(r"\s*R\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*")?;
+    let copy_regex = Regex::new(r"\s*C\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*")?;
 
     let git_diff = git(["diff", "tfs", &branch, "-b", "--name-status"])?;
     for line in git_diff.lines() {
