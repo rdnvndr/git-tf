@@ -1,6 +1,7 @@
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use regex::Regex;
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -36,7 +37,11 @@ fn make_readonly(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn git(args: &[&str]) -> Result<String, String> {
+fn git<I, S>(args: I) -> Result<String, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let output = Command::new("git")
         .args(args)
         .env("LC_ALL", "C.UTF-8")
@@ -53,7 +58,11 @@ fn git(args: &[&str]) -> Result<String, String> {
    }
 }
 
-fn tf(args: &[&str]) -> Result<String, String> {
+fn tf<I, S>(args: I) -> Result<String, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let output = Command::new("tf")
         .args(args)
         .env("LANG", "C")
@@ -79,19 +88,21 @@ struct Workfold {
 }
 
 fn get_workfold(toplevel: &str) -> Result<Workfold, String> {
-    let tf_workfold = tf(&["workfold",  &toplevel])?;
+    let tf_workfold = tf(["workfold",  &toplevel])?;
     let mut workfold_lines = tf_workfold.lines();
 
     let workspace_regex = Regex::new(r"\s*Workspace:\s*([\s\S]*)\s*").map_err(|e| e.to_string())?;
     let workspace = workfold_lines
         .find_map(|s| workspace_regex.captures(s))
-        .map(|caps| caps.get(1).unwrap().as_str().trim())
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().trim())
         .ok_or_else(|| "Missing workspace".to_string())?;
 
     let collection_regex = Regex::new(r"\s*Collection:\s*([\s\S]*)\s*").map_err(|e| e.to_string())?;
     let collection = workfold_lines
         .find_map(|s| collection_regex.captures(s))
-        .map(|caps| caps.get(1).unwrap().as_str().trim())
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().trim())
         .ok_or_else(|| "Missing collection".to_string())?;
 
     let mut path_map_expr = String::from(r"\s*(\$[^:]*)\s*:\s*(");
@@ -100,7 +111,11 @@ fn get_workfold(toplevel: &str) -> Result<Workfold, String> {
     let path_map_regex = Regex::new(&path_map_expr).map_err(|e| e.to_string())?;
     let path_map: (&str, &str) = workfold_lines
         .find_map(|s| path_map_regex.captures(s))
-        .map(|caps| (caps.get(1).unwrap().as_str().trim(), caps.get(2).unwrap().as_str().trim()))
+        .and_then(|caps| {
+            let remote = caps.get(1)?;
+            let local = caps.get(2)?;
+            Some((remote.as_str().trim(), local.as_str().trim()))
+        })
         .ok_or_else(|| "Missing path_map".to_string())?;
 
     Ok(Workfold{
@@ -110,11 +125,13 @@ fn get_workfold(toplevel: &str) -> Result<Workfold, String> {
         local: path_map.1.to_string() })
 }
 
-fn to_date(src: &str) -> String {
+fn to_date(src: &str) -> Result<String, String> {
     let format = "%b %d, %Y, %I:%M:%S %p";
-    let naive_dt = NaiveDateTime::parse_from_str(src, format).unwrap();
-    let dt: DateTime<Local> = Local.from_local_datetime(&naive_dt).unwrap();
-    String::from(dt.to_rfc3339())
+    let naive_dt = NaiveDateTime::parse_from_str(src, format).map_err(|e| e.to_string())?;
+    let dt: DateTime<Local> = Local.from_local_datetime(&naive_dt)
+        .single()
+        .ok_or_else(|| "Invalid local datetime".to_string())?;
+    Ok(String::from(dt.to_rfc3339()))
 }
 
 #[derive(Default)]
@@ -125,13 +142,8 @@ struct Commit<'a> {
     changeset: &'a str,
 }
 
-fn fetch() -> Result<String, String> {
-    let branch = git(&["branch", "--show-current"])?;
-    let stash = git(&["stash", "push", "-u"])?;
-    let toplevel = git(&["rev-parse", "--show-toplevel"])?;
-    if branch != "tfs" {
-        git(&["switch", "tfs"])?;
-    }
+fn fetch(version: &str) -> Result<String, String> {
+    let toplevel = git(["rev-parse", "--show-toplevel"])?;
 
     let workfold = get_workfold(&toplevel)?;
 
@@ -141,20 +153,26 @@ fn fetch() -> Result<String, String> {
     let mut collection = String::from("-collection:");
     collection.push_str(&workfold.collection);
 
-    tf(&["workfold", "undo", "-recursive", &workfold.local])?;
-    tf(&["workfold", "uu", "-recursive", &workfold.local])?;
+    tf(["workfold", "undo", "-recursive", &workfold.local])?;
+    tf(["workfold", "uu", "-recursive", &workfold.local])?;
 
-    let vers_regex = Regex::new(r"(^[0-9]+)").map_err(|e| e.to_string())?;
-    let tf_vers = tf(&["history", &collection, "-recursive", "-stopafter:1", &workfold.remote])?;
-    let vers: &str = tf_vers
-        .lines()
-        .find_map(|s| vers_regex.captures(s))
-        .and_then(|caps| caps.get(1))
-        .map(|m| m.as_str().trim())
-        .ok_or_else(|| "Missing version".to_string())?;
+    let tf_vers: String;
+    let vers: &str;
+    if version.is_empty() {
+        let vers_regex = Regex::new(r"(^[0-9]+)").map_err(|e| e.to_string())?;
+        tf_vers = tf(["history", &collection, "-recursive", "-stopafter:1", &workfold.remote])?;
+        vers = tf_vers
+            .lines()
+            .find_map(|s| vers_regex.captures(s))
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().trim())
+            .ok_or_else(|| "Missing version".to_string())?;
+    } else {
+        vers = version
+    }
 
     let last_regex = Regex::new(r"\s*git-tf-id:\s*([0-9]+)\s*").map_err(|e| e.to_string())?;
-    let git_last = git(&["log", "-n", "1", "tfs", "--pretty=format:\"%B\"", &workfold.local])?;
+    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:\"%B\"", &workfold.local])?;
     let last: &str = git_last
         .lines()
         .find_map(|s| last_regex.captures(s))
@@ -164,7 +182,7 @@ fn fetch() -> Result<String, String> {
 
     let rng_vers = format!("-version:{}~{}", if last.is_empty() { vers } else { last }, vers);
     let tf_history = tf(
-        &["history", &workfold.remote, &rng_vers, "-noprompt", "-format:detailed", "-recursive"])?;
+        ["history", &workfold.remote, &rng_vers, "-noprompt", "-format:detailed", "-recursive"])?;
 
     let changeset_regex = Regex::new(r"\s*Changeset:\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
     let user_regex = Regex::new(r"\s*User:\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
@@ -220,7 +238,7 @@ fn fetch() -> Result<String, String> {
         }
     }
 
-    let git_ls_files = git(&["ls-files", "--full-name", &toplevel])?;
+    let git_ls_files = git(["ls-files", "--full-name", &toplevel])?;
     for line in git_ls_files.lines() {
         let path = Path::new(&toplevel).join(&line);
         make_readonly(&path).map_err(|e| e.to_string())?;
@@ -229,9 +247,9 @@ fn fetch() -> Result<String, String> {
     for commit in commits.iter().rev() {
         let mut vers = String::from("-version:");
         vers.push_str(commit.changeset);
-        tf(&["get", "-recursive", "-overwrite", &vers, "-force", &toplevel])?;
+        tf(["get", "-recursive", "-overwrite", &vers, "-force", &toplevel])?;
 
-        git(&["add", &toplevel])?;
+        git(["add", &toplevel])?;
 
         let mut comment = String::from("\"");
         comment.push_str(&commit.comment.join("\n"));
@@ -240,36 +258,48 @@ fn fetch() -> Result<String, String> {
         comment.push_str("\"");
 
         let mut date = String::from("--date=\"");
-        date.push_str(&to_date(commit.date));
+        date.push_str(&to_date(commit.date)?);
         date.push_str("\"");
 
         let mut author = String::from("--author=\"");
         author.push_str(commit.user);
         author.push_str(" <noreply@topsystems.ru>\"");
-        git(&["commit", "-n", "-m", &comment, &date, &author])?;
-    }
-
-    if branch != "tfs" {
-        git(&["switch", &branch])?;
-    }
-
-    if stash != "No local changes to save" {
-        git(&["stash", "pop"])?;
+        git(["commit", "-n", "-m", &comment, &date, &author])?;
     }
 
     Ok("Changes fetched!".to_string())
 }
 
+fn fetch_tfs(version: &str) -> Result<String, String> {
+    let branch = git(["branch", "--show-current"])?;
+
+    let stash = git(["stash", "push", "-u"])?;
+    if branch != "tfs" {
+        git(["switch", "tfs"])?;
+    }
+
+    let result = fetch(version);
+
+    if branch != "tfs" {
+        git(["switch", &branch])?;
+    }
+    if stash != "No local changes to save" {
+        git(["stash", "pop"])?;
+    }
+
+    result
+}
+
 fn push(msg: &str) -> Result<String, String>
 {
-    let branch = git(&["branch", "--show-current"])?;
-    let toplevel = git(&["rev-parse", "--show-toplevel"])?;
+    let branch = git(["branch", "--show-current"])?;
+    let toplevel = git(["rev-parse", "--show-toplevel"])?;
 
     let workfold = get_workfold(&toplevel)?;
-    tf(&["workfold", "undo", "-recursive", &workfold.local])?;
+    tf(["workfold", "undo", "-recursive", &workfold.local])?;
 
     let last_regex = Regex::new(r".([a-z0-9]*).").map_err(|e| e.to_string())?;
-    let git_last = git(&["log", "-n", "1", "tfs", "--pretty=format:\"%H\"", &workfold.local])?;
+    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:\"%H\"", &workfold.local])?;
     let last: &str = git_last
         .lines()
         .find_map(|s| last_regex.captures(s))
@@ -278,7 +308,7 @@ fn push(msg: &str) -> Result<String, String>
         .ok_or_else(|| "Missing hash".to_string())?;
 
     let commitbranch_regex = Regex::new(&format!("\\s*({})\\s*", branch)).map_err(|e| e.to_string())?;
-    let git_commitbranch = git(&["branch", "--contains", &last])?;
+    let git_commitbranch = git(["branch", "--contains", &last])?;
     let commitbranch: &str = git_commitbranch
         .lines()
         .find_map(|s| commitbranch_regex.captures(s))
@@ -296,7 +326,7 @@ fn push(msg: &str) -> Result<String, String>
     let move_regex = Regex::new(r"\s*R\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
     let copy_regex = Regex::new(r"\s*C\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
 
-    let git_diff = git(&["diff", "tfs", &branch, "-b", "--name-status"])?;
+    let git_diff = git(["diff", "tfs", &branch, "-b", "--name-status"])?;
     for line in git_diff.lines() {
         if let Some(caps) = modify_regex.captures(line) {
             let mut file = String::from(&toplevel);
@@ -304,7 +334,7 @@ fn push(msg: &str) -> Result<String, String>
             file.push_str(caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim());
-            tf(&["checkout", &file])?;
+            tf(["checkout", &file])?;
             continue;
         }
 
@@ -314,7 +344,7 @@ fn push(msg: &str) -> Result<String, String>
             file.push_str(caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim());
-            tf(&["add", &file])?;
+            tf(["add", &file])?;
             continue;
         }
 
@@ -324,7 +354,7 @@ fn push(msg: &str) -> Result<String, String>
             file.push_str(caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim());
-            tf(&["delete", &file])?;
+            tf(["delete", &file])?;
             continue;
         }
 
@@ -334,7 +364,7 @@ fn push(msg: &str) -> Result<String, String>
             file.push_str(caps.get(2)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim());
-            tf(&["add", &file])?;
+            tf(["add", &file])?;
             continue;
         }
 
@@ -349,22 +379,22 @@ fn push(msg: &str) -> Result<String, String>
             file2.push_str(caps.get(2)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim());
-            tf(&["add", &file2])?;
-            tf(&["delete", &file1])?;
+            tf(["add", &file2])?;
+            tf(["delete", &file1])?;
             continue;
         }
     }
 
     let mut comment = String::from("-comment:");
     if msg.is_empty() {
-        comment.push_str(&git(&["log", "-n", "1", "--pretty=format:\"%B\"", &workfold.local])?);
+        comment.push_str(&git(["log", "-n", "1", "--pretty=format:\"%B\"", &workfold.local])?);
     } else {
         comment.push_str("\"");
         comment.push_str(msg);
         comment.push_str("\"");
     }
 
-    tf(&["checkin", &comment, &workfold.local])?;
+    tf(["checkin", &comment, &workfold.local])?;
 
     Ok("Changes pushed!".to_string())
 }
@@ -374,10 +404,15 @@ fn main() {
     args.next().unwrap();
 
     let command = args.next().unwrap_or("".to_string());
-    let msg = match command.as_str() {
-        "fetch" => { fetch().unwrap() }
-        "push" => { push(args.next().unwrap().as_str()).unwrap() }
-        _ => { "No command!".to_string() }
+    let arg = args.next().unwrap_or("".to_string());
+    let result: Result<String, String> = match command.as_str() {
+        "fetch" => { fetch_tfs(&arg) }
+        "push" => { push(&arg) }
+        _ => { Err("No command!".to_string()) }
     };
-    println!("{}", &msg);
+
+    match result {
+        Ok(msg) => println!("{}", &msg),
+        Err(msg) => println!("{}", &msg),
+    }
 }
