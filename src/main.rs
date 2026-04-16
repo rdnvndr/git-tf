@@ -1,12 +1,47 @@
 use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use regex::Regex;
 use std::env;
+use std::fmt;
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
+use std::string::FromUtf8Error;
+
+pub struct Error(pub String);
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Error {
+    pub fn new(msg: impl Into<String>) -> Self {
+        Error(msg.into())
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error(err.to_string())
+    }
+}
+
+impl From<String> for Error {
+    fn from(err: String) -> Self {
+        Error(err)
+    }
+}
+
+impl From<FromUtf8Error> for Error {
+    fn from(err: FromUtf8Error) -> Self {
+        Error(err.to_string())
+    }
+}
+
 
 fn make_readonly(path: &Path) -> io::Result<()> {
     if !path.exists() {
@@ -37,7 +72,7 @@ fn make_readonly(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn git<I, S>(args: I) -> Result<String, String>
+fn git<I, S>(args: I) -> Result<String, Error>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -51,14 +86,14 @@ where
     if output.status.success() {
        String::from_utf8(output.stdout)
            .map(|s| s.trim().to_string())
-           .map_err(|e| format!("Invalid UTF-8: {}", e))
+           .map_err(|e| Error(format!("Invalid UTF-8: {}", e)))
    } else {
        String::from_utf8(output.stderr)
-           .map_err(|e| format!("Invalid UTF-8 in stderr: {}", e))
+           .map_err(|e| Error(format!("Invalid UTF-8 in stderr: {}", e)))
    }
 }
 
-fn tf<I, S>(args: I) -> Result<String, String>
+fn tf<I, S>(args: I) -> Result<String, Error>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -73,10 +108,10 @@ where
     if output.status.success() {
         String::from_utf8(output.stdout)
             .map(|s| s.trim().to_string())
-            .map_err(|e| format!("Invalid UTF-8: {}", e))
+            .map_err(|e| Error(format!("Invalid UTF-8: {}", e)))
     } else {
         String::from_utf8(output.stderr)
-            .map_err(|e| format!("Invalid UTF-8 in stderr: {}", e))
+            .map_err(|e| Error(format!("Invalid UTF-8 in stderr: {}", e)))
     }
 }
 
@@ -87,7 +122,7 @@ struct Workfold {
     local: String,
 }
 
-fn get_workfold(toplevel: &str) -> Result<Workfold, String> {
+fn get_workfold(toplevel: &str) -> Result<Workfold, Error> {
     let tf_workfold = tf(["workfold",  &toplevel])?;
     let mut workfold_lines = tf_workfold.lines();
 
@@ -125,7 +160,7 @@ fn get_workfold(toplevel: &str) -> Result<Workfold, String> {
         local: path_map.1.to_string() })
 }
 
-fn to_date(src: &str) -> Result<String, String> {
+fn to_date(src: &str) -> Result<String, Error> {
     let format = "%b %d, %Y, %I:%M:%S %p";
     let naive_dt = NaiveDateTime::parse_from_str(src, format).map_err(|e| e.to_string())?;
     let dt: DateTime<Local> = Local.from_local_datetime(&naive_dt)
@@ -142,7 +177,7 @@ struct Commit<'a> {
     changeset: &'a str,
 }
 
-fn fetch(version: &str) -> Result<String, String> {
+fn fetch(version: &str) -> Result<String, Error> {
     let toplevel = git(["rev-parse", "--show-toplevel"])?;
 
     let workfold = get_workfold(&toplevel)?;
@@ -270,7 +305,7 @@ fn fetch(version: &str) -> Result<String, String> {
     Ok("Changes fetched!".to_string())
 }
 
-fn fetch_tfs(version: &str) -> Result<String, String> {
+fn fetch_tfs(version: &str) -> Result<String, Error> {
     let branch = git(["branch", "--show-current"])?;
 
     let stash = git(["stash", "push", "-u"])?;
@@ -290,7 +325,7 @@ fn fetch_tfs(version: &str) -> Result<String, String> {
     result
 }
 
-fn push(msg: &str) -> Result<String, String>
+fn push(msg: &str) -> Result<String, Error>
 {
     let branch = git(["branch", "--show-current"])?;
     let toplevel = git(["rev-parse", "--show-toplevel"])?;
@@ -317,7 +352,7 @@ fn push(msg: &str) -> Result<String, String>
         .ok_or_else(|| "Missing baranch".to_string())?;
 
     if commitbranch.is_empty() {
-        return Err(String::from("В текущую ветку не слиты изменения ветки TFS"));
+        return Err(Error::new("В текущую ветку не слиты изменения ветки TFS"));
     }
 
     let modify_regex = Regex::new(r"\s*M\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
@@ -405,10 +440,10 @@ fn main() {
 
     let command = args.next().unwrap_or("".to_string());
     let arg = args.next().unwrap_or("".to_string());
-    let result: Result<String, String> = match command.as_str() {
+    let result: Result<String, Error> = match command.as_str() {
         "fetch" => { fetch_tfs(&arg) }
         "push" => { push(&arg) }
-        _ => { Err("No command!".to_string()) }
+        _ => { Err(Error::new("No command!")) }
     };
 
     match result {
