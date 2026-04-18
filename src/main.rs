@@ -90,7 +90,7 @@ fn fetch(version: &str) -> Result<String, Error> {
     let tf_vers: String;
     let vers: &str;
     if version.is_empty() {
-        let vers_regex = Regex::new(r"(^[0-9]+)").map_err(|e| e.to_string())?;
+        let vers_regex = Regex::new(r"(^[0-9]+)")?;
         tf_vers = tf(["history", &collection, "-recursive", "-stopafter:1", &workfold.remote])?;
         vers = tf_vers
             .lines()
@@ -102,8 +102,8 @@ fn fetch(version: &str) -> Result<String, Error> {
         vers = version
     }
 
-    let last_regex = Regex::new(r"\s*git-tf-id:\s*([0-9]+)\s*").map_err(|e| e.to_string())?;
-    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:\"%B\"", &workfold.local])?;
+    let last_regex = Regex::new(r"\s*git-tf-id:\s*([0-9]+)\s*")?;
+    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:%B", &workfold.local])?;
     let last: &str = git_last
         .lines()
         .find_map(|s| last_regex.captures(s))
@@ -115,12 +115,12 @@ fn fetch(version: &str) -> Result<String, Error> {
     let tf_history = tf(
         ["history", &workfold.remote, &rng_vers, "-noprompt", "-format:detailed", "-recursive"])?;
 
-    let changeset_regex = Regex::new(r"\s*Changeset:\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
-    let user_regex = Regex::new(r"\s*User:\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
-    let date_regex = Regex::new(r"\s*Date:\s*([\S\s]*)\s*").map_err(|e| e.to_string())?;
-    let comment_regex = Regex::new(r"\s*Comment:\s*").map_err(|e| e.to_string())?;
-    let items_regex = Regex::new(r"\s*Items:\s*").map_err(|e| e.to_string())?;
-    let no_ci_regex = Regex::new(r"\s***NO_CI***\s").map_err(|e| e.to_string())?;
+    let changeset_regex = Regex::new(r"\s*Changeset:\s*([\S\s]*)\s*")?;
+    let user_regex = Regex::new(r"\s*User:\s*([\S\s]*)\s*")?;
+    let date_regex = Regex::new(r"\s*Date:\s*([\S\s]*)\s*")?;
+    let comment_regex = Regex::new(r"\s*Comment:\s*")?;
+    let items_regex = Regex::new(r"\s*Items:\s*")?;
+    let no_ci_regex = Regex::new(r"\s***NO_CI***\s")?;
 
     let mut is_comment = false;
     let mut commit = Commit::default();
@@ -182,19 +182,16 @@ fn fetch(version: &str) -> Result<String, Error> {
 
         git(["add", &toplevel])?;
 
-        let mut comment = String::from("\"");
-        comment.push_str(&commit.comment.join("\n"));
-        comment.push_str("\ngit-tf-id: ");
+        let mut comment = String::from(&commit.comment.join("\n"));
+        comment.push_str("\n\ngit-tf-id: ");
         comment.push_str(commit.changeset);
-        comment.push_str("\"");
 
-        let mut date = String::from("--date=\"");
+        let mut date = String::from("--date=");
         date.push_str(&to_date(commit.date)?);
-        date.push_str("\"");
 
-        let mut author = String::from("--author=\"");
+        let mut author = String::from("--author=");
         author.push_str(commit.user);
-        author.push_str(" <noreply@topsystems.ru>\"");
+        author.push_str(" <noreply@topsystems.ru>");
         git(["commit", "-n", "-m", &comment, &date, &author])?;
     }
 
@@ -230,7 +227,7 @@ fn push(msg: &str) -> Result<String, Error>
     tf(["workfold", "undo", "-recursive", &workfold.local])?;
 
     let last_regex = Regex::new(r".([a-z0-9]*).")?;
-    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:\"%H\"", &workfold.local])?;
+    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:%H", &workfold.local])?;
     let last: &str = git_last
         .lines()
         .find_map(|s| last_regex.captures(s))
@@ -318,11 +315,9 @@ fn push(msg: &str) -> Result<String, Error>
 
     let mut comment = String::from("-comment:");
     if msg.is_empty() {
-        comment.push_str(&git(["log", "-n", "1", "--pretty=format:\"%B\"", &workfold.local])?);
+        comment.push_str(&git(["log", "-n", "1", "--pretty=format:%B", &workfold.local])?);
     } else {
-        comment.push_str("\"");
         comment.push_str(msg);
-        comment.push_str("\"");
     }
 
     tf(["checkin", &comment, &workfold.local])?;
