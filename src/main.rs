@@ -5,10 +5,12 @@ use std::path::Path;
 
 mod error;
 mod fs;
+mod spinner;
 mod vcs;
 
 use crate::error::Error;
 use crate::fs::make_readonly;
+use crate::spinner::Spinner;
 use crate::vcs::{ tf, git };
 
 struct Workfold {
@@ -76,7 +78,9 @@ struct Commit<'a> {
 fn fetch(version: &str) -> Result<String, Error> {
     let toplevel = git(["rev-parse", "--show-toplevel"])?;
 
+    let spinner = Spinner::new("Get workfold");
     let workfold = get_workfold(&toplevel)?;
+    spinner.stop();
 
     let mut workspace = String::from("-workspace:");
     workspace.push_str(&workfold.workspace);
@@ -84,9 +88,12 @@ fn fetch(version: &str) -> Result<String, Error> {
     let mut collection = String::from("-collection:");
     collection.push_str(&workfold.collection);
 
+    let spinner = Spinner::new("Undo workfold");
     tf(["workfold", "undo", "-recursive", &workfold.local])?;
     tf(["workfold", "uu", "-recursive", &workfold.local])?;
+    spinner.stop();
 
+    let spinner = Spinner::new("Get versions");
     let tf_vers: String;
     let vers: &str;
     if version.is_empty() {
@@ -114,7 +121,9 @@ fn fetch(version: &str) -> Result<String, Error> {
     let rng_vers = format!("-version:{}~{}", if last.is_empty() { vers } else { last }, vers);
     let tf_history = tf(
         ["history", &workfold.remote, &rng_vers, "-noprompt", "-format:detailed", "-recursive"])?;
+    spinner.stop();
 
+    let spinner = Spinner::new("Get changesets");
     let changeset_regex = Regex::new(r"\s*Changeset:\s*([\S\s]*)\s*")?;
     let user_regex = Regex::new(r"\s*User:\s*([\S\s]*)\s*")?;
     let date_regex = Regex::new(r"\s*Date:\s*([\S\s]*)\s*")?;
@@ -168,14 +177,16 @@ fn fetch(version: &str) -> Result<String, Error> {
             continue;
         }
     }
+    spinner.stop();
 
     let git_ls_files = git(["ls-files", "--full-name", &toplevel])?;
-    for line in git_ls_files.lines() {
-        let path = Path::new(&toplevel).join(&line);
-        make_readonly(&path)?;
-    }
-
     for commit in commits.iter().rev() {
+        let spinner = Spinner::new(&(String::from("Commit changesets: ") + &commit.changeset));
+        for line in git_ls_files.lines() {
+            let path = Path::new(&toplevel).join(&line);
+            make_readonly(&path)?;
+        }
+
         let mut vers = String::from("-version:");
         vers.push_str(commit.changeset);
         tf(["get", "-recursive", "-overwrite", &vers, "-force", &toplevel])?;
@@ -193,39 +204,53 @@ fn fetch(version: &str) -> Result<String, Error> {
         author.push_str(commit.user);
         author.push_str(" <noreply@topsystems.ru>");
         git(["commit", "-n", "-m", &comment, &date, &author])?;
+        spinner.stop();
     }
 
     Ok("Changes fetched!".to_string())
 }
 
 fn fetch_tfs(version: &str) -> Result<String, Error> {
+    let spinner = Spinner::new("Get current branch");
     let branch = git(["branch", "--show-current"])?;
+    spinner.stop();
 
+    let spinner = Spinner::new("Switch tfs branch");
     let stash = git(["stash", "push", "-u"])?;
     if branch != "tfs" {
         git(["switch", "tfs"])?;
     }
+    spinner.stop();
 
     let result = fetch(version);
 
+    let spinner = Spinner::new("Switch current branch");
     if branch != "tfs" {
         git(["switch", &branch])?;
     }
     if stash != "No local changes to save" {
         git(["stash", "pop"])?;
     }
+    spinner.stop();
 
     result
 }
 
-fn push(msg: &str) -> Result<String, Error>
-{
+fn push(msg: &str) -> Result<String, Error> {
+    let spinner = Spinner::new("Get current branch");
     let branch = git(["branch", "--show-current"])?;
     let toplevel = git(["rev-parse", "--show-toplevel"])?;
+    spinner.stop();
 
+    let spinner = Spinner::new("Undo workfold");
     let workfold = get_workfold(&toplevel)?;
-    tf(["workfold", "undo", "-recursive", &workfold.local])?;
+    spinner.stop();
 
+    let spinner = Spinner::new("Undo workfold");
+    tf(["workfold", "undo", "-recursive", &workfold.local])?;
+    spinner.stop();
+
+    let spinner = Spinner::new("Checking the possibility of making changes");
     let last_regex = Regex::new(r".([a-z0-9]*).")?;
     let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:%H", &workfold.local])?;
     let last: &str = git_last
@@ -242,85 +267,114 @@ fn push(msg: &str) -> Result<String, Error>
         .find_map(|s| commitbranch_regex.captures(s))
         .and_then(|caps| caps.get(1))
         .map(|m| m.as_str().trim())
-        .ok_or_else(|| "Missing baranch".to_string())?;
+        .ok_or_else(|| "Missing branch".to_string())?;
 
     if commitbranch.is_empty() {
-        return Err(Error::new("В текущую ветку не слиты изменения ветки TFS"));
+        return Err(Error::new("The current branch has not merged changes from the tfs branch."));
     }
+    spinner.stop();
+
+    let spinner = Spinner::new("Get changes");
+    let git_diff = git(["diff", "tfs", &branch, "-b", "--name-status"])?;
+    spinner.stop();
 
     let modify_regex = Regex::new(r"\s*M\s*([\S\s]*)\s*")?;
     let add_regex = Regex::new(r"\s*A\s*([\S\s]*)\s*")?;
     let del_regex = Regex::new(r"\s*D\s*([\S\s]*)\s*")?;
     let move_regex = Regex::new(r"\s*R\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*")?;
     let copy_regex = Regex::new(r"\s*C\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*")?;
-
-    let git_diff = git(["diff", "tfs", &branch, "-b", "--name-status"])?;
     for line in git_diff.lines() {
         if let Some(caps) = modify_regex.captures(line) {
+            let repo_file = caps.get(1)
+                .ok_or_else(|| "Missing change".to_string())?
+                .as_str().trim();
+
+            let spinner = Spinner::new(&(String::from("M: ") + repo_file));
             let mut file = String::from(&toplevel);
             file.push_str("/");
-            file.push_str(caps.get(1)
-                .ok_or_else(|| "Missing change".to_string())?
-                .as_str().trim());
+            file.push_str(&repo_file);
             tf(["checkout", &file])?;
+            spinner.stop();
             continue;
         }
 
         if let Some(caps) = add_regex.captures(line) {
+            let repo_file = caps.get(1)
+                .ok_or_else(|| "Missing change".to_string())?
+                .as_str().trim();
+
+            let spinner = Spinner::new(&(String::from("A: ") + repo_file));
             let mut file = String::from(&toplevel);
             file.push_str("/");
-            file.push_str(caps.get(1)
-                .ok_or_else(|| "Missing change".to_string())?
-                .as_str().trim());
+            file.push_str(&repo_file);
             tf(["add", &file])?;
+            spinner.stop();
             continue;
         }
 
         if let Some(caps) = del_regex.captures(line) {
+            let repo_file = caps.get(1)
+                .ok_or_else(|| "Missing change".to_string())?
+                .as_str().trim();
+
+            let spinner = Spinner::new(&(String::from("D: ") + repo_file));
             let mut file = String::from(&toplevel);
             file.push_str("/");
-            file.push_str(caps.get(1)
-                .ok_or_else(|| "Missing change".to_string())?
-                .as_str().trim());
+            file.push_str(&repo_file);
             tf(["delete", &file])?;
+            spinner.stop();
             continue;
         }
 
         if let Some(caps) = copy_regex.captures(line) {
+            let repo_file = caps.get(1)
+                .ok_or_else(|| "Missing change".to_string())?
+                .as_str().trim();
+
+            let spinner = Spinner::new(&(String::from("A: ") + repo_file));
             let mut file = String::from(&toplevel);
             file.push_str("/");
-            file.push_str(caps.get(2)
-                .ok_or_else(|| "Missing change".to_string())?
-                .as_str().trim());
+            file.push_str(&repo_file);
             tf(["add", &file])?;
+            spinner.stop();
             continue;
         }
 
         if let Some(caps) = move_regex.captures(line) {
-            let mut file1 = String::from(&toplevel);
-            file1.push_str("/");
-            file1.push_str(caps.get(1)
+            let repo_file1 = caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
-                .as_str().trim());
+                .as_str().trim();
+            let repo_file2 = caps.get(2)
+                .ok_or_else(|| "Missing change".to_string())?
+                .as_str().trim();
+
+            let spinner = Spinner::new(&(String::from("A: ") + repo_file2));
             let mut file2 = String::from(&toplevel);
             file2.push_str("/");
-            file2.push_str(caps.get(2)
-                .ok_or_else(|| "Missing change".to_string())?
-                .as_str().trim());
+            file2.push_str(repo_file1);
             tf(["add", &file2])?;
+            spinner.stop();
+
+            let spinner = Spinner::new(&(String::from("D: ") + repo_file1));
+            let mut file1 = String::from(&toplevel);
+            file1.push_str("/");
+            file1.push_str(repo_file1);
             tf(["delete", &file1])?;
+            spinner.stop();
+
             continue;
         }
     }
 
+    let spinner = Spinner::new("Checkin changeset");
     let mut comment = String::from("-comment:");
     if msg.is_empty() {
         comment.push_str(&git(["log", "-n", "1", "--pretty=format:%B", &workfold.local])?);
     } else {
         comment.push_str(msg);
     }
-
     tf(["checkin", &comment, &workfold.local])?;
+    spinner.stop();
 
     Ok("Changes pushed!".to_string())
 }
