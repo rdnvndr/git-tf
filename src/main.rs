@@ -110,7 +110,7 @@ fn fetch(version: &str) -> Result<String, Error> {
     }
 
     let last_regex = Regex::new(r"\s*git-tf-id:\s*([0-9]+)\s*")?;
-    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:%B", &workfold.local])?;
+    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:%B"])?;
     let last: &str = git_last
         .lines()
         .find_map(|s| last_regex.captures(s))
@@ -251,8 +251,8 @@ fn push(msg: &str) -> Result<String, Error> {
     spinner.stop();
 
     let spinner = Spinner::new("Checking the possibility of making changes");
-    let last_regex = Regex::new(r".([a-z0-9]*).")?;
-    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:%H", &workfold.local])?;
+    let last_regex = Regex::new(r"([a-f0-9]*)")?;
+    let git_last = git(["log", "-n", "1", "tfs", "--pretty=format:%H"])?;
     let last: &str = git_last
         .lines()
         .find_map(|s| last_regex.captures(s))
@@ -261,7 +261,7 @@ fn push(msg: &str) -> Result<String, Error> {
         .ok_or_else(|| "Missing hash".to_string())?;
 
     let commitbranch_regex = Regex::new(&format!("\\s*({})\\s*", branch))?;
-    let git_commitbranch = git(["branch", "--contains", &last])?;
+    let git_commitbranch = git(["branch", &branch, "--contains", &last])?;
     let commitbranch: &str = git_commitbranch
         .lines()
         .find_map(|s| commitbranch_regex.captures(s))
@@ -369,11 +369,11 @@ fn push(msg: &str) -> Result<String, Error> {
     let spinner = Spinner::new("Checkin changeset");
     let mut comment = String::from("-comment:");
     if msg.is_empty() {
-        comment.push_str(&git(["log", "-n", "1", "--pretty=format:%B", &workfold.local])?);
+        comment.push_str(&git(["log", "-n", "1", "--pretty=format:%B"])?);
     } else {
         comment.push_str(msg);
     }
-    tf(["checkin", &comment, &workfold.local])?;
+    tf(["checkin", &comment, "-recursive", &workfold.local])?;
     spinner.stop();
 
     Ok("Changes pushed!".to_string())

@@ -31,7 +31,7 @@ where
 {
     let output = Command::new("tf")
         .args(args)
-        .env("LANG", "C")
+        .env("LC_ALL", "C.UTF-8")
         .env("TF_ADDITIONAL_JAVA_ARGS", "-Dfile.encoding=UTF-8 -Duser.language=en -Duser.country=US")
         .output()
         .map_err(|e| format!("Failed to execute tf: {}", e))?;
