@@ -13,6 +13,8 @@ use crate::fs::make_readonly;
 use crate::spinner::Spinner;
 use crate::vcs::{ tf, git };
 
+const COMMAND_SIZE: usize = 7500;
+
 struct Workfold {
     workspace: String,
     collection: String,
@@ -276,25 +278,23 @@ fn push(msg: &str) -> Result<String, Error> {
 
     let spinner = Spinner::new("Get changes");
     let git_diff = git(["diff", "tfs", &branch, "-b", "--name-status"])?;
-    spinner.stop();
 
     let modify_regex = Regex::new(r"\s*M\s*([\S\s]*)\s*")?;
     let add_regex = Regex::new(r"\s*A\s*([\S\s]*)\s*")?;
     let del_regex = Regex::new(r"\s*D\s*([\S\s]*)\s*")?;
     let move_regex = Regex::new(r"\s*R\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*")?;
     let copy_regex = Regex::new(r"\s*C\s*[0-9]*\s*([\S\s]*)\s*->\s*([\S\s]*)\s*")?;
+
+    let mut checkout_vec = vec![];
+    let mut add_vec = vec![];
+    let mut delete_vec = vec![];
+
     for line in git_diff.lines() {
         if let Some(caps) = modify_regex.captures(line) {
             let repo_file = caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim();
-
-            let spinner = Spinner::new(&(String::from("M: ") + repo_file));
-            let mut file = String::from(&toplevel);
-            file.push_str("/");
-            file.push_str(&repo_file);
-            tf(["checkout", &file])?;
-            spinner.stop();
+            checkout_vec.push(repo_file);
             continue;
         }
 
@@ -302,13 +302,7 @@ fn push(msg: &str) -> Result<String, Error> {
             let repo_file = caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim();
-
-            let spinner = Spinner::new(&(String::from("A: ") + repo_file));
-            let mut file = String::from(&toplevel);
-            file.push_str("/");
-            file.push_str(&repo_file);
-            tf(["add", &file])?;
-            spinner.stop();
+            add_vec.push(repo_file);
             continue;
         }
 
@@ -316,13 +310,7 @@ fn push(msg: &str) -> Result<String, Error> {
             let repo_file = caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim();
-
-            let spinner = Spinner::new(&(String::from("D: ") + repo_file));
-            let mut file = String::from(&toplevel);
-            file.push_str("/");
-            file.push_str(&repo_file);
-            tf(["delete", &file])?;
-            spinner.stop();
+            delete_vec.push(repo_file);
             continue;
         }
 
@@ -330,13 +318,7 @@ fn push(msg: &str) -> Result<String, Error> {
             let repo_file = caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim();
-
-            let spinner = Spinner::new(&(String::from("A: ") + repo_file));
-            let mut file = String::from(&toplevel);
-            file.push_str("/");
-            file.push_str(&repo_file);
-            tf(["add", &file])?;
-            spinner.stop();
+            add_vec.push(repo_file);
             continue;
         }
 
@@ -344,25 +326,73 @@ fn push(msg: &str) -> Result<String, Error> {
             let repo_file1 = caps.get(1)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim();
+            delete_vec.push(repo_file1);
             let repo_file2 = caps.get(2)
                 .ok_or_else(|| "Missing change".to_string())?
                 .as_str().trim();
-
-            let spinner = Spinner::new(&(String::from("A: ") + repo_file2));
-            let mut file2 = String::from(&toplevel);
-            file2.push_str("/");
-            file2.push_str(repo_file1);
-            tf(["add", &file2])?;
-            spinner.stop();
-
-            let spinner = Spinner::new(&(String::from("D: ") + repo_file1));
-            let mut file1 = String::from(&toplevel);
-            file1.push_str("/");
-            file1.push_str(repo_file1);
-            tf(["delete", &file1])?;
-            spinner.stop();
-
+            add_vec.push(repo_file2);
             continue;
+        }
+    }
+    spinner.stop();
+
+    let mut args = vec![String::from("checkout")];
+    let mut args_size = 0;
+    let mut iter = checkout_vec.iter().peekable();
+    while let Some(repo_file) = iter.next() {
+        let mut file = String::from(&toplevel);
+        file.push_str("/");
+        file.push_str(&repo_file);
+        println!("{}", String::from("[M] ") + repo_file);
+
+        args_size += file.len() + 3;
+        args.push(file);
+        if args_size > COMMAND_SIZE || iter.peek().is_none() {
+            let spinner = Spinner::new("Checkout files");
+            tf(args)?;
+            args = vec![String::from("checkout")];
+            args_size = 0;
+            spinner.stop();
+        }
+    }
+
+    args = vec![String::from("add")];
+    args_size = 0;
+    iter = add_vec.iter().peekable();
+    while let Some(repo_file) = iter.next() {
+        let mut file = String::from(&toplevel);
+        file.push_str("/");
+        file.push_str(&repo_file);
+        println!("{}", String::from("[A] ") + repo_file);
+
+        args_size += file.len() + 3;
+        args.push(file);
+        if args_size > COMMAND_SIZE || iter.peek().is_none() {
+            let spinner = Spinner::new("Add files");
+            tf(args)?;
+            args = vec![String::from("add")];
+            args_size = 0;
+            spinner.stop();
+        }
+    }
+
+    args = vec![String::from("delete")];
+    args_size = 0;
+    iter = delete_vec.iter().peekable();
+    while let Some(repo_file) = iter.next() {
+        let mut file = String::from(&toplevel);
+        file.push_str("/");
+        file.push_str(&repo_file);
+        println!("{}", String::from("[D] ") + repo_file);
+
+        args_size += file.len() + 3;
+        args.push(file);
+        if args_size > COMMAND_SIZE || iter.peek().is_none() {
+            let spinner = Spinner::new("Delete files");
+            tf(args)?;
+            args = vec![String::from("delete")];
+            args_size = 0;
+            spinner.stop();
         }
     }
 

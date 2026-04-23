@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE QtCreatorProject>
-<!-- Written by QtCreator 19.0.1, 2026-04-22T01:54:04. -->
+<!-- Written by QtCreator 19.0.1, 2026-04-25T01:36:51. -->
 <qtcreator>
  <data>
   <variable>EnvironmentId</variable>
@@ -153,7 +153,7 @@
      <value type="QString" key="ProjectExplorer.RunConfiguration.BuildKey"></value>
      <value type="bool" key="ProjectExplorer.RunConfiguration.Customized">true</value>
      <value type="QString" key="ProjectExplorer.RunConfiguration.UniqueId">{608af068-dde7-400e-9661-059e87e386dc}</value>
-     <value type="QString" key="RunConfiguration.Arguments">push</value>
+     <value type="QString" key="RunConfiguration.Arguments">fetch</value>
      <value type="int" key="RunConfiguration.UseCppDebugger">0</value>
      <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">false</value>
      <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
@@ -272,7 +272,7 @@
     <value type="QString" key="ProjectExplorer.RunConfiguration.BuildKey"></value>
     <value type="bool" key="ProjectExplorer.RunConfiguration.Customized">true</value>
     <value type="QString" key="ProjectExplorer.RunConfiguration.UniqueId">{608af068-dde7-400e-9661-059e87e386dc}</value>
-    <value type="QString" key="RunConfiguration.Arguments">push</value>
+    <value type="QString" key="RunConfiguration.Arguments">fetch</value>
     <value type="int" key="RunConfiguration.UseCppDebugger">0</value>
     <value type="bool" key="RunConfiguration.UseCppDebuggerAuto">false</value>
     <value type="bool" key="RunConfiguration.UseQmlDebuggerAuto">true</value>
