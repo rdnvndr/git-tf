@@ -244,7 +244,7 @@ fn push(msg: &str) -> Result<String, Error> {
     let toplevel = git(["rev-parse", "--show-toplevel"])?;
     spinner.stop();
 
-    let spinner = Spinner::new("Undo workfold");
+    let spinner = Spinner::new("Get workfold");
     let workfold = get_workfold(&toplevel)?;
     spinner.stop();
 
